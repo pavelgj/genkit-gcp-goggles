@@ -122,15 +122,35 @@ function getGenkitLabel(labels: Record<string, string>, key: string): string {
   return labels[`genkit/${key}`] || '';
 }
 
+/**
+ * Convert a decimal span ID (from Cloud Trace v1 API) to hex (OpenTelemetry format).
+ * Cloud Trace v1 returns span IDs as decimal strings (e.g., "7711528741674100077"),
+ * but Cloud Logging and OpenTelemetry use hex strings (e.g., "6b07af740c451d9d").
+ * These are 64-bit unsigned integers, so we need BigInt for the conversion.
+ */
+function decimalSpanIdToHex(decimalStr: string): string {
+  try {
+    return BigInt(decimalStr).toString(16).padStart(16, '0');
+  } catch {
+    // If it's already hex or invalid, return as-is
+    return decimalStr;
+  }
+}
+
 function normalizeSpan(span: GcpSpan): NormalizedSpan {
   const labels = span.labels || {};
   const state = getGenkitLabel(labels, 'state');
   const type = getGenkitLabel(labels, 'type');
   const subtype = getGenkitLabel(labels, 'metadata/subtype');
 
+  // Convert decimal span IDs from Cloud Trace v1 to hex (OpenTelemetry format)
+  // so they match the hex span IDs in Cloud Logging entries
+  const spanId = decimalSpanIdToHex(span.spanId);
+  const parentSpanId = span.parentSpanId ? decimalSpanIdToHex(span.parentSpanId) : null;
+
   return {
-    spanId: span.spanId,
-    parentSpanId: span.parentSpanId || null,
+    spanId,
+    parentSpanId,
     name: span.name || getGenkitLabel(labels, 'name') || '<unnamed>',
     startTime: span.startTime,
     endTime: span.endTime,

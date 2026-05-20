@@ -358,28 +358,28 @@ export function FeatureDetailScreen({
                   St
                 </Text>
               </Box>
-              <Box width={18}>
+              <Box width={20}>
                 <Text bold dimColor>
                   Time
                 </Text>
               </Box>
-              <Box width={8} justifyContent="flex-end">
+              <Box width={10} justifyContent="flex-end">
                 <Text bold dimColor>
                   Duration
                 </Text>
               </Box>
-              <Box width={26}>
+              <Box width={6} justifyContent="flex-end">
                 <Text bold dimColor>
-                  {'  '}Input
+                  Spans
                 </Text>
               </Box>
-              <Box width={24}>
+              <Box width={30}>
                 <Text bold dimColor>
                   {'  '}Model
                 </Text>
               </Box>
             </Box>
-            <Text dimColor>{'─'.repeat(80)}</Text>
+            <Text dimColor>{'─'.repeat(70)}</Text>
 
             {traces.map((trace, i) => (
               <TraceRow key={trace.traceId} trace={trace} selected={i === selectedIndex} />
@@ -417,11 +417,6 @@ function TraceRow({ trace, selected }: { trace: TraceListItem; selected: boolean
     .map((m) => m.split('/').pop() || m)
     .join(', ');
 
-  // Format input for display
-  const inputPreview = trace.rootSpan.input
-    ? truncate(trace.rootSpan.input.replace(/\s+/g, ' '), 22)
-    : '—';
-
   return (
     <Box>
       <Box width={4}>
@@ -430,17 +425,17 @@ function TraceRow({ trace, selected }: { trace: TraceListItem; selected: boolean
           {statusIcon}
         </Text>
       </Box>
-      <Box width={18}>
+      <Box width={20}>
         <Text color={selected ? 'cyan' : undefined}>{formatTime(trace.rootSpan.startTime)}</Text>
       </Box>
-      <Box width={8} justifyContent="flex-end">
+      <Box width={10} justifyContent="flex-end">
         <Text>{formatDuration(trace.rootSpan.durationMs)}</Text>
       </Box>
-      <Box width={26}>
-        <Text dimColor>{'  '}{inputPreview}</Text>
+      <Box width={6} justifyContent="flex-end">
+        <Text dimColor>{trace.spanCount}</Text>
       </Box>
-      <Box width={24}>
-        <Text dimColor>{'  '}{truncate(models || '—', 22)}</Text>
+      <Box width={30}>
+        <Text dimColor>{'  '}{truncate(models || '—', 28)}</Text>
       </Box>
     </Box>
   );

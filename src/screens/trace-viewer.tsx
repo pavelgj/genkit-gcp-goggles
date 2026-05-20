@@ -3,6 +3,7 @@ import { Box, Text, useInput } from 'ink';
 import Spinner from 'ink-spinner';
 import { useAsync } from '../hooks/use-async.js';
 import { getTrace, buildSpanTree, flattenSpanTree, type NormalizedSpan } from '../gcp/tracing.js';
+import { fetchTraceLogEntries, type SpanIOFromLogs } from '../gcp/logging.js';
 import { cache, CacheTTL } from '../gcp/cache.js';
 import { formatDuration, formatTime, truncate, type Screen } from '../types.js';
 
@@ -40,7 +41,8 @@ export function TraceViewerScreen({ projectId, traceId, featureName, onNavigate 
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [showFullJson, setShowFullJson] = useState(false);
 
-  const { data: traceData, loading, error } = useAsync(
+  // Phase 1: Load trace spans only (fast — Cloud Trace API)
+  const { data: traceData, loading: traceLoading, error: traceError } = useAsync(
     () =>
       cache.getOrFetch(
         `trace:${projectId}:${traceId}`,
@@ -55,12 +57,22 @@ export function TraceViewerScreen({ projectId, traceId, featureName, onNavigate 
     [projectId, traceId]
   );
 
+  // Phase 2: Load I/O from logs in background (lazy — Cloud Logging API)
+  const { data: logIO, loading: logsLoading, error: logsError } = useAsync(
+    () =>
+      cache.getOrFetch(
+        `trace-logs:${projectId}:${traceId}`,
+        CacheTTL.TRACE_LOGS,
+        () => fetchTraceLogEntries(projectId, traceId)
+      ),
+    [projectId, traceId]
+  );
+
   // Build visible span list (respecting collapsed state)
   const visibleSpans: Array<{ span: NormalizedSpan; depth: number }> = [];
 
   function collectVisible(span: NormalizedSpan, depth: number) {
     visibleSpans.push({ span, depth });
-    // expanded set tracks which are collapsed (inverted logic)
     const isCollapsed = expanded.has(span.spanId);
     if (!isCollapsed) {
       for (const child of span.children) {
@@ -74,6 +86,11 @@ export function TraceViewerScreen({ projectId, traceId, featureName, onNavigate 
   }
 
   const selectedSpan = visibleSpans[selectedIndex]?.span || null;
+
+  // Look up I/O for the selected span from logs (or fall back to trace labels)
+  const selectedSpanIO: SpanIOFromLogs | undefined = selectedSpan
+    ? logIO?.get(selectedSpan.spanId)
+    : undefined;
 
   useInput((input, key) => {
     if (key.escape || (key.leftArrow && !key.shift)) {
@@ -116,7 +133,7 @@ export function TraceViewerScreen({ projectId, traceId, featureName, onNavigate 
     }
   });
 
-  if (loading) {
+  if (traceLoading) {
     return (
       <Box>
         <Text color="cyan"><Spinner type="dots" /></Text>
@@ -125,11 +142,11 @@ export function TraceViewerScreen({ projectId, traceId, featureName, onNavigate 
     );
   }
 
-  if (error) {
+  if (traceError) {
     return (
       <Box flexDirection="column">
         <Text color="red">✗ Error loading trace:</Text>
-        <Text color="red">{error}</Text>
+        <Text color="red">{traceError}</Text>
         <Text dimColor>Press Esc to go back</Text>
       </Box>
     );
@@ -172,7 +189,14 @@ export function TraceViewerScreen({ projectId, traceId, featureName, onNavigate 
         {/* Span detail (right panel) */}
         <Box flexDirection="column" width="55%">
           {selectedSpan && (
-            <SpanDetailPanel span={selectedSpan} showFullJson={showFullJson} />
+            <SpanDetailPanel
+              span={selectedSpan}
+              spanIO={selectedSpanIO}
+              logsLoading={logsLoading}
+              logsError={logsError || undefined}
+              logIOSize={logIO?.size}
+              showFullJson={showFullJson}
+            />
           )}
         </Box>
       </Box>
@@ -228,10 +252,32 @@ function SpanTreeNode({
   );
 }
 
-function SpanDetailPanel({ span, showFullJson }: { span: NormalizedSpan; showFullJson: boolean }) {
+function SpanDetailPanel({
+  span,
+  spanIO,
+  logsLoading,
+  logsError,
+  logIOSize,
+  showFullJson,
+}: {
+  span: NormalizedSpan;
+  spanIO?: SpanIOFromLogs;
+  logsLoading: boolean;
+  logsError?: string;
+  logIOSize?: number;
+  showFullJson: boolean;
+}) {
   const typeLabel = getSpanTypeLabel(span);
   const typeColor = getSpanTypeColor(typeLabel);
   const statusColor = span.status === 'success' ? 'green' : span.status === 'error' ? 'red' : 'gray';
+
+  // Resolve input/output: prefer log-based I/O, fall back to trace labels.
+  // While logs are loading, don't fall back to trace labels (which are usually
+  // '<redacted>') — show a spinner instead and wait for log data.
+  // If logs errored, fall back to trace labels immediately.
+  const logsDone = !logsLoading || !!logsError;
+  const rawInput = spanIO?.input || (logsDone ? span.input : '') || '';
+  const rawOutput = spanIO?.output || (logsDone ? span.output : '') || '';
 
   // Try to pretty-print JSON
   const formatJson = (s: string): string => {
@@ -243,8 +289,12 @@ function SpanDetailPanel({ span, showFullJson }: { span: NormalizedSpan; showFul
     }
   };
 
-  const inputDisplay = showFullJson ? formatJson(span.input) : truncate(span.input || '—', 60);
-  const outputDisplay = showFullJson ? formatJson(span.output) : truncate(span.output || '—', 60);
+  const inputDisplay = rawInput && rawInput !== '<redacted>'
+    ? (showFullJson ? formatJson(rawInput) : truncate(rawInput, 60))
+    : (logsLoading ? null : (rawInput || '—'));
+  const outputDisplay = rawOutput && rawOutput !== '<redacted>'
+    ? (showFullJson ? formatJson(rawOutput) : truncate(rawOutput, 60))
+    : (logsLoading ? null : (rawOutput || '—'));
 
   return (
     <Box flexDirection="column">
@@ -285,7 +335,14 @@ function SpanDetailPanel({ span, showFullJson }: { span: NormalizedSpan; showFul
           {typeLabel === 'flow' ? 'Flow input:' : 'Input:'}
         </Text>
         <Box borderStyle="single" borderColor="gray" paddingX={1}>
-          <Text wrap="wrap">{inputDisplay}</Text>
+          {inputDisplay === null ? (
+            <Box>
+              <Text color="cyan"><Spinner type="dots" /></Text>
+              <Text dimColor> Loading…</Text>
+            </Box>
+          ) : (
+            <Text wrap="wrap">{inputDisplay}</Text>
+          )}
         </Box>
       </Box>
 
@@ -295,15 +352,28 @@ function SpanDetailPanel({ span, showFullJson }: { span: NormalizedSpan; showFul
           {typeLabel === 'flow' ? 'Flow output:' : 'Output:'}
         </Text>
         <Box borderStyle="single" borderColor="gray" paddingX={1}>
-          <Text wrap="wrap" color={span.output === '<redacted>' ? 'yellow' : undefined}>
-            {outputDisplay}
-          </Text>
+          {outputDisplay === null ? (
+            <Box>
+              <Text color="cyan"><Spinner type="dots" /></Text>
+              <Text dimColor> Loading…</Text>
+            </Box>
+          ) : (
+            <Text wrap="wrap" color={rawOutput === '<redacted>' ? 'yellow' : undefined}>
+              {outputDisplay}
+            </Text>
+          )}
         </Box>
       </Box>
 
-      {/* Span ID */}
-      <Box marginTop={1}>
+      {/* Span ID & debug info */}
+      <Box marginTop={1} flexDirection="column">
         <Text dimColor>ID: {span.spanId}</Text>
+        {logsError && (
+          <Text color="red">⚠ Logs error: {logsError}</Text>
+        )}
+        {!logsLoading && !logsError && logIOSize !== undefined && (
+          <Text dimColor>Logs: {logIOSize} spans with I/O{spanIO ? ' (matched)' : ' (no match for this span)'}</Text>
+        )}
       </Box>
     </Box>
   );

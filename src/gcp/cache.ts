@@ -8,6 +8,7 @@ export const CacheTTL = {
   METRICS: 60_000,
   TRACE_LIST: 30_000,
   TRACE_DETAIL: 300_000,
+  TRACE_LOGS: 600_000,   // 10 min — logs for past traces never change
   PROJECTS: 600_000,
 } as const;
 
