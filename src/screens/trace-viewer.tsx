@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { Box, Text, useInput } from 'ink';
+import React, { useState, useMemo } from 'react';
+import { Box, Text, useInput, useStdout } from 'ink';
 import Spinner from 'ink-spinner';
 import { useAsync } from '../hooks/use-async.js';
 import { getTrace, buildSpanTree, flattenSpanTree, type NormalizedSpan } from '../gcp/tracing.js';
@@ -40,6 +40,7 @@ export function TraceViewerScreen({ projectId, traceId, featureName, onNavigate 
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [showFullJson, setShowFullJson] = useState(false);
+  const [scrollOffset, setScrollOffset] = useState(0);
 
   // Phase 1: Load trace spans only (fast — Cloud Trace API)
   const { data: traceData, loading: traceLoading, error: traceError } = useAsync(
@@ -92,7 +93,57 @@ export function TraceViewerScreen({ projectId, traceId, featureName, onNavigate 
     ? logIO?.get(selectedSpan.spanId)
     : undefined;
 
+  // Build full I/O content lines for scrollable view
+  const formatJson = (s: string): string => {
+    if (!s || s === '<redacted>') return s || '—';
+    try { return JSON.stringify(JSON.parse(s), null, 2); } catch { return s; }
+  };
+
+  const logsDone = !logsLoading || !!logsError;
+  const fullIOLines = useMemo(() => {
+    if (!showFullJson || !selectedSpan) return [];
+    const rawIn = selectedSpanIO?.input || (logsDone ? selectedSpan.input : '') || '';
+    const rawOut = selectedSpanIO?.output || (logsDone ? selectedSpan.output : '') || '';
+    const lines: string[] = [];
+    lines.push(`── ${selectedSpan.name} ──`);
+    lines.push('');
+    lines.push('━━━ INPUT ━━━');
+    lines.push(...(rawIn ? formatJson(rawIn) : '—').split('\n'));
+    lines.push('');
+    lines.push('━━━ OUTPUT ━━━');
+    lines.push(...(rawOut ? formatJson(rawOut) : '—').split('\n'));
+    return lines;
+  }, [showFullJson, selectedSpan?.spanId, selectedSpanIO, logsDone]);
+
+  const { stdout } = useStdout();
+  const termRows = stdout.rows || 24;
+  const viewportHeight = termRows - 4; // reserve header + footer
+
   useInput((input, key) => {
+    // Full I/O scrollable view mode
+    if (showFullJson) {
+      if (input === 'i' || key.escape) {
+        setShowFullJson(false);
+        setScrollOffset(0);
+        return;
+      }
+      const maxScroll = Math.max(0, fullIOLines.length - viewportHeight);
+      if (key.downArrow || input === 'j') {
+        setScrollOffset((o) => Math.min(o + 1, maxScroll));
+      }
+      if (key.upArrow || input === 'k') {
+        setScrollOffset((o) => Math.max(o - 1, 0));
+      }
+      // Page down/up with space and shift
+      if (input === ' ') {
+        setScrollOffset((o) => Math.min(o + viewportHeight, maxScroll));
+      }
+      if (input === 'b') {
+        setScrollOffset((o) => Math.max(o - viewportHeight, 0));
+      }
+      return;
+    }
+
     if (key.escape || (key.leftArrow && !key.shift)) {
       if (featureName) {
         onNavigate({ type: 'feature', featureName });
@@ -104,11 +155,9 @@ export function TraceViewerScreen({ projectId, traceId, featureName, onNavigate 
 
     if (key.downArrow || input === 'j') {
       setSelectedIndex((i) => Math.min(i + 1, visibleSpans.length - 1));
-      setShowFullJson(false);
     }
     if (key.upArrow || input === 'k') {
       setSelectedIndex((i) => Math.max(i - 1, 0));
-      setShowFullJson(false);
     }
 
     // Toggle collapse/expand
@@ -129,7 +178,8 @@ export function TraceViewerScreen({ projectId, traceId, featureName, onNavigate 
 
     // Toggle full JSON view
     if (input === 'i') {
-      setShowFullJson((prev) => !prev);
+      setShowFullJson(true);
+      setScrollOffset(0);
     }
   });
 
@@ -157,6 +207,40 @@ export function TraceViewerScreen({ projectId, traceId, featureName, onNavigate 
       <Box flexDirection="column">
         <Text color="yellow">No spans found for this trace.</Text>
         <Text dimColor>Press Esc to go back</Text>
+      </Box>
+    );
+  }
+
+  // Full-screen scrollable I/O view
+  if (showFullJson && selectedSpan) {
+    const visibleLines = fullIOLines.slice(scrollOffset, scrollOffset + viewportHeight);
+    const maxScroll = Math.max(0, fullIOLines.length - viewportHeight);
+    const scrollPct = maxScroll > 0 ? Math.round((scrollOffset / maxScroll) * 100) : 100;
+
+    return (
+      <Box flexDirection="column">
+        <Box marginBottom={1}>
+          <Text bold color="cyan">── Full I/O: </Text>
+          <Text bold>{selectedSpan.name}</Text>
+          <Text dimColor>  ({scrollPct}%)</Text>
+        </Box>
+
+        <Box flexDirection="column" height={viewportHeight}>
+          {visibleLines.map((line, i) => {
+            const isHeader = line.startsWith('━━━');
+            return (
+              <Text key={scrollOffset + i} wrap="truncate" color={isHeader ? 'cyan' : undefined} bold={isHeader}>
+                {line}
+              </Text>
+            );
+          })}
+        </Box>
+
+        <Box marginTop={1}>
+          <Text dimColor>
+            [↑↓/jk] Scroll  [Space] Page down  [b] Page up  [i/Esc] Back
+          </Text>
+        </Box>
       </Box>
     );
   }
@@ -195,7 +279,7 @@ export function TraceViewerScreen({ projectId, traceId, featureName, onNavigate 
               logsLoading={logsLoading}
               logsError={logsError || undefined}
               logIOSize={logIO?.size}
-              showFullJson={showFullJson}
+              showFullJson={false}
             />
           )}
         </Box>
@@ -289,11 +373,12 @@ function SpanDetailPanel({
     }
   };
 
+  // In compact mode, show first 200 chars; in full mode (press 'i'), show everything
   const inputDisplay = rawInput && rawInput !== '<redacted>'
-    ? (showFullJson ? formatJson(rawInput) : truncate(rawInput, 60))
+    ? (showFullJson ? formatJson(rawInput) : truncate(rawInput, 200))
     : (logsLoading ? null : (rawInput || '—'));
   const outputDisplay = rawOutput && rawOutput !== '<redacted>'
-    ? (showFullJson ? formatJson(rawOutput) : truncate(rawOutput, 60))
+    ? (showFullJson ? formatJson(rawOutput) : truncate(rawOutput, 200))
     : (logsLoading ? null : (rawOutput || '—'));
 
   return (
@@ -365,14 +450,11 @@ function SpanDetailPanel({
         </Box>
       </Box>
 
-      {/* Span ID & debug info */}
+      {/* Span ID & logs status */}
       <Box marginTop={1} flexDirection="column">
         <Text dimColor>ID: {span.spanId}</Text>
         {logsError && (
-          <Text color="red">⚠ Logs error: {logsError}</Text>
-        )}
-        {!logsLoading && !logsError && logIOSize !== undefined && (
-          <Text dimColor>Logs: {logIOSize} spans with I/O{spanIO ? ' (matched)' : ' (no match for this span)'}</Text>
+          <Text color="red">⚠ Logs: {truncate(logsError, 60)}</Text>
         )}
       </Box>
     </Box>
