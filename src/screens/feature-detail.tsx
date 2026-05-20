@@ -1,14 +1,19 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Box, Text, useInput } from 'ink';
 import Spinner from 'ink-spinner';
-import { BarChart } from '@pppp606/ink-chart';
+import { LineGraph } from '@pppp606/ink-chart';
 import { useAsync } from '../hooks/use-async.js';
-import { queryFeatureOverview } from '../gcp/monitoring.js';
+import { queryFeatureOverview, queryFeatureDetailTimeSeries } from '../gcp/monitoring.js';
 import { listTraces, normalizeTraceForList, type TraceListItem } from '../gcp/tracing.js';
 import { cache, CacheTTL } from '../gcp/cache.js';
 import {
-  formatNumber, formatPercent, formatDuration, formatTime, truncate,
-  type TimeRange, type Screen,
+  formatNumber,
+  formatPercent,
+  formatDuration,
+  formatTime,
+  truncate,
+  type TimeRange,
+  type Screen,
 } from '../types.js';
 
 interface FeatureDetailProps {
@@ -18,8 +23,24 @@ interface FeatureDetailProps {
   onNavigate: (screen: Screen) => void;
 }
 
-export function FeatureDetailScreen({ projectId, featureName, timeRange, onNavigate }: FeatureDetailProps) {
+const PAGE_SIZE = 20;
+
+export function FeatureDetailScreen({
+  projectId,
+  featureName,
+  timeRange,
+  onNavigate,
+}: FeatureDetailProps) {
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [currentPage, setCurrentPage] = useState(0);
+  const [pageTokens, setPageTokens] = useState<(string | undefined)[]>([undefined]);
+
+  // Reset pagination when feature or time range changes
+  useEffect(() => {
+    setCurrentPage(0);
+    setPageTokens([undefined]);
+    setSelectedIndex(0);
+  }, [featureName, timeRange.preset]);
 
   // Fetch feature metrics
   const { data: features } = useAsync(
@@ -34,33 +55,85 @@ export function FeatureDetailScreen({ projectId, featureName, timeRange, onNavig
 
   const feature = features?.find((f) => f.name === featureName) || null;
 
-  // Fetch traces for this feature
-  const { data: tracesData, loading: tracesLoading, error: tracesError } = useAsync(
+  // Fetch time-series for charts
+  const { data: timeSeries } = useAsync(
     () =>
       cache.getOrFetch(
-        `traces:${projectId}:${featureName}:${timeRange.preset}`,
-        CacheTTL.TRACE_LIST,
-        async () => {
-          const { traces: rawTraces } = await listTraces({
+        `feature-ts:${projectId}:${featureName}:${timeRange.preset}`,
+        CacheTTL.METRICS,
+        () =>
+          queryFeatureDetailTimeSeries(
             projectId,
-            startTime: timeRange.startTime,
-            endTime: timeRange.endTime,
-            filter: `genkit/feature:${featureName}`,
-            pageSize: 20,
-          });
-          return rawTraces.map(normalizeTraceForList);
-        }
+            featureName,
+            timeRange.startTime,
+            timeRange.endTime
+          )
       ),
     [projectId, featureName, timeRange.preset]
   );
 
-  const traces = tracesData || [];
+  // Fetch traces for this feature (paginated, ordered newest-first)
+  const {
+    data: tracesPage,
+    loading: tracesLoading,
+    error: tracesError,
+  } = useAsync(
+    () =>
+      cache.getOrFetch(
+        `traces:${projectId}:${featureName}:${timeRange.preset}:p${currentPage}:${pageTokens[currentPage] || ''}`,
+        CacheTTL.TRACE_LIST,
+        async () => {
+          const { traces: rawTraces, nextPageToken } = await listTraces({
+            projectId,
+            startTime: timeRange.startTime,
+            endTime: timeRange.endTime,
+            filter: `genkit/feature:${featureName}`,
+            pageSize: PAGE_SIZE,
+            pageToken: pageTokens[currentPage],
+            orderBy: 'start desc',
+          });
+          return {
+            traces: rawTraces.map(normalizeTraceForList),
+            nextPageToken,
+          };
+        }
+      ),
+    [projectId, featureName, timeRange.preset, currentPage]
+  );
+
+  // Store nextPageToken when new page data arrives
+  useEffect(() => {
+    if (tracesPage?.nextPageToken && !pageTokens[currentPage + 1]) {
+      setPageTokens((prev) => {
+        const next = [...prev];
+        next[currentPage + 1] = tracesPage.nextPageToken;
+        return next;
+      });
+    }
+  }, [tracesPage, currentPage, pageTokens]);
+
+  const traces = tracesPage?.traces || [];
+  const hasNextPage = !!tracesPage?.nextPageToken;
+  const hasPrevPage = currentPage > 0;
 
   useInput((input, key) => {
     if (key.escape || (key.leftArrow && !key.shift)) {
       onNavigate({ type: 'overview' });
       return;
     }
+
+    // Pagination
+    if (input === 'n' && hasNextPage && !tracesLoading) {
+      setCurrentPage((p) => p + 1);
+      setSelectedIndex(0);
+      return;
+    }
+    if (input === 'p' && hasPrevPage && !tracesLoading) {
+      setCurrentPage((p) => p - 1);
+      setSelectedIndex(0);
+      return;
+    }
+
     if (traces.length === 0) return;
 
     if (key.downArrow || input === 'j') {
@@ -75,79 +148,201 @@ export function FeatureDetailScreen({ projectId, featureName, timeRange, onNavig
     }
   });
 
-  // Token bar chart
-  const tokenBarData: Array<{ label: string; value: number; color: string }> = [];
-  if (feature) {
-    if (feature.inputTokens > 0) tokenBarData.push({ label: 'Input', value: feature.inputTokens, color: '#58a6ff' });
-    if (feature.outputTokens > 0) tokenBarData.push({ label: 'Output', value: feature.outputTokens, color: '#d29922' });
-    if (feature.thinkingTokens > 0) tokenBarData.push({ label: 'Thinking', value: feature.thinkingTokens, color: '#bc8cff' });
-  }
-
   const failedCount = traces.filter((t) => t.rootSpan.status === 'error').length;
+
+  // Extract chart values
+  const reqValues = timeSeries?.requests.map((p) => p.value) || [];
+  const successValues = timeSeries?.successRate.map((p) => p.value) || [];
+  const latP95Values = timeSeries?.latencyP95.map((p) => p.value) || [];
+  const latP50Values = timeSeries?.latencyP50.map((p) => p.value) || [];
+  const inTokValues = timeSeries?.inputTokens.map((p) => p.value) || [];
+  const outTokValues = timeSeries?.outputTokens.map((p) => p.value) || [];
+  const hasCharts =
+    reqValues.length > 1 || successValues.length > 1 || inTokValues.length > 1;
 
   return (
     <Box flexDirection="column">
       {/* Header */}
       <Box marginBottom={1}>
         <Text dimColor>← </Text>
-        <Text bold color="cyan">{featureName}</Text>
+        <Text bold color="cyan">
+          {featureName}
+        </Text>
       </Box>
 
-      {/* Stats bar */}
+      {/* Stability metrics bar */}
       {feature && (
-        <Box marginBottom={1} gap={2}>
+        <Box marginBottom={1} gap={2} flexWrap="wrap">
           <Box>
-            <Text dimColor>Total: </Text>
+            <Text dimColor>Total requests </Text>
             <Text bold>{formatNumber(feature.totalRequests)}</Text>
           </Box>
           <Box>
-            <Text dimColor>Success: </Text>
+            <Text dimColor>Success rate </Text>
             <Text
               bold
-              color={feature.successRate >= 0.95 ? 'green' : feature.successRate >= 0.5 ? 'yellow' : 'red'}
+              color={
+                feature.successRate >= 0.95
+                  ? 'green'
+                  : feature.successRate >= 0.5
+                    ? 'yellow'
+                    : 'red'
+              }
             >
               {formatPercent(feature.successRate)}
             </Text>
           </Box>
           <Box>
-            <Text dimColor>Tokens: </Text>
-            <Text color="blue">{formatNumber(feature.inputTokens)}</Text>
-            <Text dimColor> in / </Text>
-            <Text color="yellow">{formatNumber(feature.outputTokens)}</Text>
-            <Text dimColor> out</Text>
+            <Text dimColor>Latency (p95) </Text>
+            <Text bold>
+              {feature.latencyP95Ms != null ? formatDuration(feature.latencyP95Ms) : '—'}
+            </Text>
           </Box>
-          {feature.inputImages > 0 && (
+          <Box>
+            <Text dimColor>Tokens </Text>
+            <Text color="blue">{formatNumber(feature.inputTokens)}</Text>
+            <Text dimColor> / </Text>
+            <Text color="yellow">{formatNumber(feature.outputTokens)}</Text>
+            <Text dimColor> / </Text>
+            <Text color="magenta">{formatNumber(feature.thinkingTokens)}</Text>
+          </Box>
+          {(feature.inputImages > 0 || feature.outputImages > 0) && (
             <Box>
-              <Text dimColor>Images: </Text>
+              <Text dimColor>Images </Text>
               <Text>{formatNumber(feature.inputImages)}</Text>
-              <Text dimColor> in / </Text>
+              <Text dimColor> / </Text>
               <Text>{formatNumber(feature.outputImages)}</Text>
-              <Text dimColor> out</Text>
             </Box>
           )}
         </Box>
       )}
 
-      {/* Token usage chart */}
-      {tokenBarData.length > 0 && (
+      {/* Time-series charts (2x2 grid) */}
+      {hasCharts && (
         <Box flexDirection="column" marginBottom={1}>
-          <Text bold color="cyan">── Token Usage ──</Text>
-          <BarChart data={tokenBarData} showValue="right" />
+          {/* Row 1: Requests + Tokens */}
+          <Box marginBottom={1}>
+            <Box flexDirection="column" marginRight={2} width="50%">
+              <Text bold color="cyan">
+                Requests
+              </Text>
+              {reqValues.length > 1 ? (
+                <LineGraph
+                  data={[{ values: reqValues, color: '#58a6ff' }]}
+                  height={4}
+                  width={32}
+                  showYAxis={true}
+                />
+              ) : (
+                <Text dimColor>No data</Text>
+              )}
+            </Box>
+            <Box flexDirection="column" width="50%">
+              <Text bold color="cyan">
+                Tokens
+              </Text>
+              {inTokValues.length > 1 || outTokValues.length > 1 ? (
+                <LineGraph
+                  data={[
+                    ...(inTokValues.length > 1
+                      ? [{ values: inTokValues, color: '#58a6ff' }]
+                      : []),
+                    ...(outTokValues.length > 1
+                      ? [{ values: outTokValues, color: '#d29922' }]
+                      : []),
+                  ]}
+                  height={4}
+                  width={32}
+                  showYAxis={true}
+                />
+              ) : (
+                <Text dimColor>No data</Text>
+              )}
+              {(inTokValues.length > 1 || outTokValues.length > 1) && (
+                <Box gap={2}>
+                  <Text color="#58a6ff" dimColor>
+                    ● Input
+                  </Text>
+                  <Text color="#d29922" dimColor>
+                    ● Output
+                  </Text>
+                </Box>
+              )}
+            </Box>
+          </Box>
+
+          {/* Row 2: Success Rate + Latency */}
+          <Box>
+            <Box flexDirection="column" marginRight={2} width="50%">
+              <Text bold color="cyan">
+                Success rate
+              </Text>
+              {successValues.length > 1 ? (
+                <LineGraph
+                  data={[{ values: successValues, color: '#3fb950' }]}
+                  height={4}
+                  width={32}
+                  showYAxis={true}
+                  yDomain={[0, 100] as [number, number]}
+                />
+              ) : (
+                <Text dimColor>No data</Text>
+              )}
+            </Box>
+            <Box flexDirection="column" width="50%">
+              <Text bold color="cyan">
+                Latency
+              </Text>
+              {latP95Values.length > 1 ? (
+                <LineGraph
+                  data={[
+                    { values: latP95Values, color: '#58a6ff' },
+                    ...(latP50Values.length > 1
+                      ? [{ values: latP50Values, color: '#d29922' }]
+                      : []),
+                  ]}
+                  height={4}
+                  width={32}
+                  showYAxis={true}
+                />
+              ) : (
+                <Text dimColor>No data</Text>
+              )}
+              {latP95Values.length > 1 && (
+                <Box gap={2}>
+                  <Text color="#58a6ff" dimColor>
+                    ● p95
+                  </Text>
+                  {latP50Values.length > 1 && (
+                    <Text color="#d29922" dimColor>
+                      ● p50
+                    </Text>
+                  )}
+                </Box>
+              )}
+            </Box>
+          </Box>
         </Box>
       )}
 
       {/* Traces list */}
       <Box flexDirection="column">
         <Box gap={1}>
-          <Text bold color="cyan">── Traces ──</Text>
-          {failedCount > 0 && (
-            <Text color="red">⚠ {failedCount} failed</Text>
-          )}
+          <Text bold color="cyan">
+            ── Traces ──
+          </Text>
+          {failedCount > 0 && <Text color="red">⚠ {failedCount} failed</Text>}
+          <Text dimColor>
+            Page {currentPage + 1}
+            {hasNextPage ? '' : ' (last)'}
+          </Text>
         </Box>
 
         {tracesLoading ? (
           <Box>
-            <Text color="cyan"><Spinner type="dots" /></Text>
+            <Text color="cyan">
+              <Spinner type="dots" />
+            </Text>
             <Text> Loading traces…</Text>
           </Box>
         ) : tracesError ? (
@@ -158,12 +353,33 @@ export function FeatureDetailScreen({ projectId, featureName, timeRange, onNavig
           <>
             {/* Table header */}
             <Box>
-              <Box width={6}><Text bold dimColor>Status</Text></Box>
-              <Box width={20}><Text bold dimColor>Time</Text></Box>
-              <Box width={10} justifyContent="flex-end"><Text bold dimColor>Duration</Text></Box>
-              <Box width={30}><Text bold dimColor>  Model</Text></Box>
+              <Box width={4}>
+                <Text bold dimColor>
+                  St
+                </Text>
+              </Box>
+              <Box width={18}>
+                <Text bold dimColor>
+                  Time
+                </Text>
+              </Box>
+              <Box width={8} justifyContent="flex-end">
+                <Text bold dimColor>
+                  Duration
+                </Text>
+              </Box>
+              <Box width={26}>
+                <Text bold dimColor>
+                  {'  '}Input
+                </Text>
+              </Box>
+              <Box width={24}>
+                <Text bold dimColor>
+                  {'  '}Model
+                </Text>
+              </Box>
             </Box>
-            <Text dimColor>{'─'.repeat(66)}</Text>
+            <Text dimColor>{'─'.repeat(80)}</Text>
 
             {traces.map((trace, i) => (
               <TraceRow key={trace.traceId} trace={trace} selected={i === selectedIndex} />
@@ -174,7 +390,10 @@ export function FeatureDetailScreen({ projectId, featureName, timeRange, onNavig
 
       <Box marginTop={1}>
         <Text dimColor>
-          [↑↓] Navigate  [Enter] View trace  [Esc/←] Back  [t] Time range  [q] Quit
+          [↑↓] Navigate [Enter] View trace
+          {hasNextPage ? ' [n] Next page' : ''}
+          {hasPrevPage ? ' [p] Prev page' : ''}
+          {' '}[Esc/←] Back [q] Quit
         </Text>
       </Box>
     </Box>
@@ -182,25 +401,46 @@ export function FeatureDetailScreen({ projectId, featureName, timeRange, onNavig
 }
 
 function TraceRow({ trace, selected }: { trace: TraceListItem; selected: boolean }) {
-  const statusIcon = trace.rootSpan.status === 'success' ? '✓' : trace.rootSpan.status === 'error' ? '●' : '?';
-  const statusColor = trace.rootSpan.status === 'success' ? 'green' : trace.rootSpan.status === 'error' ? 'red' : 'gray';
-  const models = trace.models.map((m) => m.split('/').pop() || m).join(', ');
+  const statusIcon =
+    trace.rootSpan.status === 'success'
+      ? '✓'
+      : trace.rootSpan.status === 'error'
+        ? '✗'
+        : '?';
+  const statusColor =
+    trace.rootSpan.status === 'success'
+      ? 'green'
+      : trace.rootSpan.status === 'error'
+        ? 'red'
+        : 'gray';
+  const models = trace.models
+    .map((m) => m.split('/').pop() || m)
+    .join(', ');
+
+  // Format input for display
+  const inputPreview = trace.rootSpan.input
+    ? truncate(trace.rootSpan.input.replace(/\s+/g, ' '), 22)
+    : '—';
 
   return (
     <Box>
-      <Box width={6}>
+      <Box width={4}>
         <Text color={statusColor} bold={selected} inverse={selected}>
-          {selected ? '▸' : ' '}{statusIcon}
+          {selected ? '▸' : ' '}
+          {statusIcon}
         </Text>
       </Box>
-      <Box width={20}>
+      <Box width={18}>
         <Text color={selected ? 'cyan' : undefined}>{formatTime(trace.rootSpan.startTime)}</Text>
       </Box>
-      <Box width={10} justifyContent="flex-end">
+      <Box width={8} justifyContent="flex-end">
         <Text>{formatDuration(trace.rootSpan.durationMs)}</Text>
       </Box>
-      <Box width={30}>
-        <Text dimColor>  {truncate(models || '—', 28)}</Text>
+      <Box width={26}>
+        <Text dimColor>{'  '}{inputPreview}</Text>
+      </Box>
+      <Box width={24}>
+        <Text dimColor>{'  '}{truncate(models || '—', 22)}</Text>
       </Box>
     </Box>
   );

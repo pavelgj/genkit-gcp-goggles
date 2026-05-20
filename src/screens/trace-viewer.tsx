@@ -13,6 +13,28 @@ interface TraceViewerProps {
   onNavigate: (screen: Screen) => void;
 }
 
+// Badge colors for span types (matching GCP Console)
+const TYPE_COLORS: Record<string, string> = {
+  flow: '#58a6ff',      // blue
+  model: '#bc8cff',     // purple
+  tool: '#3fb950',      // green
+  step: '#79c0ff',      // light blue
+  dotprompt: '#d29922', // yellow/amber
+  util: '#8b949e',      // gray
+  action: '#58a6ff',    // blue
+  retrieve: '#f778ba',  // pink
+  embed: '#f778ba',     // pink
+};
+
+function getSpanTypeLabel(span: NormalizedSpan): string {
+  return span.subtype || span.type || 'unknown';
+}
+
+function getSpanTypeColor(label: string): string {
+  const lower = label.toLowerCase();
+  return TYPE_COLORS[lower] || '#8b949e';
+}
+
 export function TraceViewerScreen({ projectId, traceId, featureName, onNavigate }: TraceViewerProps) {
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -38,11 +60,7 @@ export function TraceViewerScreen({ projectId, traceId, featureName, onNavigate 
 
   function collectVisible(span: NormalizedSpan, depth: number) {
     visibleSpans.push({ span, depth });
-    // By default all expanded; collapsed set tracks which are collapsed
-    if (!expanded.has(span.spanId) && span.children.length > 0) {
-      // default is expanded (expanded set tracks collapsed ones in reverse)
-    }
-    // Actually, let's default to all expanded and use collapsed set
+    // expanded set tracks which are collapsed (inverted logic)
     const isCollapsed = expanded.has(span.spanId);
     if (!isCollapsed) {
       for (const child of span.children) {
@@ -182,16 +200,19 @@ function SpanTreeNode({
   isCollapsed: boolean;
 }) {
   const indent = '  '.repeat(depth);
-  const statusIcon = span.status === 'success' ? '✓' : span.status === 'error' ? '●' : '○';
+  const statusIcon = span.status === 'success' ? '✓' : span.status === 'error' ? '✗' : '○';
   const statusColor = span.status === 'success' ? 'green' : span.status === 'error' ? 'red' : 'gray';
   const arrow = hasChildren ? (isCollapsed ? '▸' : '▾') : ' ';
   const name = span.name.split('/').pop() || span.name;
+  const typeLabel = getSpanTypeLabel(span);
+  const typeColor = getSpanTypeColor(typeLabel);
+
+  // Calculate max name width based on depth
+  const maxNameWidth = Math.max(8, 22 - depth * 2);
 
   return (
     <Box>
-      <Text>
-        {indent}
-      </Text>
+      <Text>{indent}</Text>
       <Text color={statusColor}>{statusIcon} </Text>
       <Text dimColor>{arrow} </Text>
       <Text
@@ -199,15 +220,17 @@ function SpanTreeNode({
         bold={selected}
         inverse={selected}
       >
-        {truncate(name, 28 - depth * 2)}
+        {truncate(name, maxNameWidth)}
       </Text>
-      <Text dimColor> {formatDuration(span.durationMs)}</Text>
+      <Text dimColor> {formatDuration(span.durationMs)} </Text>
+      <Text color={typeColor}>[{typeLabel}]</Text>
     </Box>
   );
 }
 
 function SpanDetailPanel({ span, showFullJson }: { span: NormalizedSpan; showFullJson: boolean }) {
-  const typeLabel = span.subtype || span.type || 'unknown';
+  const typeLabel = getSpanTypeLabel(span);
+  const typeColor = getSpanTypeColor(typeLabel);
   const statusColor = span.status === 'success' ? 'green' : span.status === 'error' ? 'red' : 'gray';
 
   // Try to pretty-print JSON
@@ -228,24 +251,18 @@ function SpanDetailPanel({ span, showFullJson }: { span: NormalizedSpan; showFul
       <Text bold color="cyan">── Span Detail ──</Text>
 
       {/* Span header */}
-      <Box gap={1}>
+      <Box>
         <Text bold>{span.name}</Text>
       </Box>
-      <Box gap={2}>
-        <Text color={statusColor}>
-          {span.status === 'success' ? '✓ Success' : span.status === 'error' ? '● Failed' : '○ Unknown'}
+
+      {/* Badge row */}
+      <Box gap={1} flexWrap="wrap">
+        <Text color={statusColor} bold>
+          {span.status === 'success' ? '✓ Successful' : span.status === 'error' ? '✗ Failed' : '○ Unknown'}
         </Text>
-        <Text dimColor>
-          🏷 {typeLabel}
-        </Text>
-        <Text dimColor>
-          ⏱ {formatDuration(span.durationMs)}
-        </Text>
-      </Box>
-      <Box>
-        <Text dimColor>
-          📅 {formatTime(span.startTime)}
-        </Text>
+        <Text color={typeColor} bold>[{typeLabel}]</Text>
+        <Text dimColor>⏱ {formatDuration(span.durationMs)}</Text>
+        <Text dimColor>📅 {formatTime(span.startTime)}</Text>
       </Box>
 
       {span.modelName && (
@@ -264,7 +281,9 @@ function SpanDetailPanel({ span, showFullJson }: { span: NormalizedSpan; showFul
 
       {/* Input */}
       <Box flexDirection="column" marginTop={1}>
-        <Text bold dimColor>Input:</Text>
+        <Text bold dimColor>
+          {typeLabel === 'flow' ? 'Flow input:' : 'Input:'}
+        </Text>
         <Box borderStyle="single" borderColor="gray" paddingX={1}>
           <Text wrap="wrap">{inputDisplay}</Text>
         </Box>
@@ -272,7 +291,9 @@ function SpanDetailPanel({ span, showFullJson }: { span: NormalizedSpan; showFul
 
       {/* Output */}
       <Box flexDirection="column" marginTop={1}>
-        <Text bold dimColor>Output:</Text>
+        <Text bold dimColor>
+          {typeLabel === 'flow' ? 'Flow output:' : 'Output:'}
+        </Text>
         <Box borderStyle="single" borderColor="gray" paddingX={1}>
           <Text wrap="wrap" color={span.output === '<redacted>' ? 'yellow' : undefined}>
             {outputDisplay}
