@@ -90,7 +90,7 @@ export function App({ projectId: initialProjectId, timeRangePreset = '24h' }: Ap
     const errorMsg = authError || authStatus?.error || 'Not authenticated with Google Cloud';
     return (
       <Box flexDirection="column" padding={1}>
-        <Header timeRange={timeRange} projectId="—" />
+        <Header timeRange={timeRange} projectId="-" />
         <Box flexDirection="column" marginTop={1}>
           <ErrorDisplay error={errorMsg} context="authentication" showRetry={false} />
         </Box>
@@ -101,7 +101,7 @@ export function App({ projectId: initialProjectId, timeRangePreset = '24h' }: Ap
   if (!resolvedProjectId) {
     return (
       <Box flexDirection="column" padding={1}>
-        <Header timeRange={timeRange} projectId="—" />
+        <Header timeRange={timeRange} projectId="-" />
         <Box flexDirection="column" marginTop={1}>
           <Text color="red">✗ No GCP project found</Text>
           <Text />

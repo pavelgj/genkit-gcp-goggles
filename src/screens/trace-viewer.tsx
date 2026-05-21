@@ -43,7 +43,7 @@ export function TraceViewerScreen({ projectId, traceId, featureName, onNavigate 
   const [showFullJson, setShowFullJson] = useState(false);
   const [scrollOffset, setScrollOffset] = useState(0);
 
-  // Phase 1: Load trace spans only (fast — Cloud Trace API)
+  // Phase 1: Load trace spans only (fast, Cloud Trace API)
   const { data: traceData, loading: traceLoading, error: traceError } = useAsync(
     () =>
       cache.getOrFetch(
@@ -110,7 +110,7 @@ export function TraceViewerScreen({ projectId, traceId, featureName, onNavigate 
 
   // Build full I/O content lines for scrollable view
   const formatJson = (s: string): string => {
-    if (!s || s === '<redacted>') return s || '—';
+    if (!s || s === '<redacted>') return s || '-';
     try { return JSON.stringify(JSON.parse(s), null, 2); } catch { return s; }
   };
 
@@ -123,10 +123,10 @@ export function TraceViewerScreen({ projectId, traceId, featureName, onNavigate 
     lines.push(`── ${selectedSpan.name} ──`);
     lines.push('');
     lines.push('━━━ INPUT ━━━');
-    lines.push(...(rawIn ? formatJson(rawIn) : '—').split('\n'));
+    lines.push(...(rawIn ? formatJson(rawIn) : '-').split('\n'));
     lines.push('');
     lines.push('━━━ OUTPUT ━━━');
-    lines.push(...(rawOut ? formatJson(rawOut) : '—').split('\n'));
+    lines.push(...(rawOut ? formatJson(rawOut) : '-').split('\n'));
     return lines;
   }, [showFullJson, selectedSpan?.spanId, selectedSpanIO, logsDone]);
 
@@ -191,7 +191,7 @@ export function TraceViewerScreen({ projectId, traceId, featureName, onNavigate 
       }
     }
 
-    // Toggle full JSON view — also triggers on-demand log loading
+    // Toggle full JSON view, also triggers on-demand log loading
     if (input === 'i') {
       setShowFullJson(true);
       setScrollOffset(0);
@@ -431,8 +431,8 @@ function SpanDetailPanel({
   const showIO = logsLoaded || hasRealData;
 
   // Show truncated preview in compact mode
-  const inputDisplay = inputIsReal ? truncate(rawInput, 200) : (rawInput || '—');
-  const outputDisplay = outputIsReal ? truncate(rawOutput, 200) : (rawOutput || '—');
+  const inputDisplay = inputIsReal ? truncate(rawInput, 200) : (rawInput || '-');
+  const outputDisplay = outputIsReal ? truncate(rawOutput, 200) : (rawOutput || '-');
 
   return (
     <Box flexDirection="column">
@@ -490,7 +490,7 @@ function SpanDetailPanel({
           </Box>
         </>
       ) : (
-        /* No I/O loaded yet — show clear CTA */
+        /* No I/O loaded yet, show clear CTA */
         <Box marginTop={1}>
           <Text color="cyan">📋 Press [i] to load full I/O from Cloud Logging</Text>
         </Box>

@@ -194,12 +194,12 @@ export function InlineError({ error, context }: { error: string; context?: strin
 
   if (category === 'auth') {
     return (
-      <Text color="red">⚠ Auth error loading {contextLabel} — run: gcloud auth application-default login</Text>
+      <Text color="red">⚠ Auth error loading {contextLabel} - run: gcloud auth application-default login</Text>
     );
   }
   if (category === 'permission') {
     return (
-      <Text color="red">⚠ Permission denied loading {contextLabel} — check IAM roles</Text>
+      <Text color="red">⚠ Permission denied loading {contextLabel} - check IAM roles</Text>
     );
   }
   return (

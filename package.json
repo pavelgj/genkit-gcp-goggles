@@ -1,14 +1,48 @@
 {
   "name": "genkit-gcp-goggles",
   "version": "0.1.0",
-  "private": true,
+  "description": "Terminal dashboard for monitoring Genkit AI apps running on Google Cloud. View metrics, traces, and span I/O right from your terminal.",
   "type": "module",
   "bin": {
-    "genkit-gcp-goggles": "./bin/cli.tsx"
+    "genkit-gcp-goggles": "dist/bin/cli.js"
   },
+  "files": [
+    "dist",
+    "docs/hero.png"
+  ],
   "scripts": {
     "start": "tsx bin/cli.tsx",
-    "dev": "tsx watch bin/cli.tsx"
+    "dev": "tsx watch bin/cli.tsx",
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "genkit",
+    "gcp",
+    "google-cloud",
+    "monitoring",
+    "tracing",
+    "telemetry",
+    "dashboard",
+    "cli",
+    "terminal",
+    "ink",
+    "ai",
+    "llm",
+    "observability"
+  ],
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/pavelgj/genkit-gcp-goggles.git"
+  },
+  "homepage": "https://github.com/pavelgj/genkit-gcp-goggles#readme",
+  "bugs": {
+    "url": "https://github.com/pavelgj/genkit-gcp-goggles/issues"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "dependencies": {
     "@pppp606/ink-chart": "^0.2.5",

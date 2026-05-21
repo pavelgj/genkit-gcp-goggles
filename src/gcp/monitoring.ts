@@ -11,7 +11,7 @@ const METRIC_PREFIX = 'workload.googleapis.com/genkit';
 function catchNonCritical(err: unknown): never | [] {
   const msg = err instanceof Error ? err.message : String(err);
   const lower = msg.toLowerCase();
-  // Re-throw auth and permission errors — these need user action
+  // Re-throw auth and permission errors - these need user action
   if (
     lower.includes('401') ||
     lower.includes('403') ||

@@ -41,7 +41,7 @@ export function formatPercent(rate: number): string {
 }
 
 export function formatTime(iso: string): string {
-  if (!iso) return '—';
+  if (!iso) return '-';
   const d = new Date(iso);
   const month = d.toLocaleString('en', { month: 'short' });
   const day = d.getDate();

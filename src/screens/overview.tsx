@@ -313,7 +313,7 @@ function FeatureRow({
       </Box>
       <Box width={10} justifyContent="flex-end">
         <Text>
-          {feature.latencyP95Ms != null ? formatDuration(feature.latencyP95Ms) : '—'}
+          {feature.latencyP95Ms != null ? formatDuration(feature.latencyP95Ms) : '-'}
         </Text>
       </Box>
       <Box width={10} justifyContent="flex-end">

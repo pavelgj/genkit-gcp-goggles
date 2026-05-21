@@ -16,7 +16,7 @@ async function fetchWithRetry(
     const status = response.status;
     // Only retry on rate limit (429) or server errors (5xx)
     if (status !== 429 && status < 500) {
-      return response; // non-retryable error — return as-is
+      return response; // non-retryable error, return as-is
     }
 
     lastError = new Error(`HTTP ${status}`);

@@ -196,7 +196,7 @@ export function FeatureDetailScreen({
           <Box>
             <Text dimColor>Latency (p95) </Text>
             <Text bold>
-              {feature.latencyP95Ms != null ? formatDuration(feature.latencyP95Ms) : '—'}
+              {feature.latencyP95Ms != null ? formatDuration(feature.latencyP95Ms) : '-'}
             </Text>
           </Box>
           <Box>
@@ -436,7 +436,7 @@ function TraceRow({ trace, selected }: { trace: TraceListItem; selected: boolean
         <Text dimColor>{trace.spanCount}</Text>
       </Box>
       <Box width={30}>
-        <Text dimColor>{'  '}{truncate(models || '—', 28)}</Text>
+        <Text dimColor>{'  '}{truncate(models || '-', 28)}</Text>
       </Box>
     </Box>
   );
