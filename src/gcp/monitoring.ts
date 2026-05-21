@@ -3,6 +3,33 @@ import { getAccessToken } from './auth.js';
 const MONITORING_BASE = 'https://monitoring.googleapis.com/v3';
 const METRIC_PREFIX = 'workload.googleapis.com/genkit';
 
+/**
+ * Catch handler for non-critical metric queries.
+ * Re-throws auth/permission errors so they bubble up to the UI.
+ * Swallows other errors (e.g., metric type not found) and returns empty array.
+ */
+function catchNonCritical(err: unknown): never | [] {
+  const msg = err instanceof Error ? err.message : String(err);
+  const lower = msg.toLowerCase();
+  // Re-throw auth and permission errors — these need user action
+  if (
+    lower.includes('401') ||
+    lower.includes('403') ||
+    lower.includes('unauthenticated') ||
+    lower.includes('permission') ||
+    lower.includes('forbidden') ||
+    lower.includes('access denied') ||
+    lower.includes('failed to get access token') ||
+    lower.includes('default credentials') ||
+    lower.includes('invalid_grant') ||
+    lower.includes('token has been expired')
+  ) {
+    throw err;
+  }
+  // Non-critical: metric not found, empty series, etc.
+  return [];
+}
+
 export const GenkitMetrics = {
   FEATURE_REQUESTS: `${METRIC_PREFIX}/feature/requests`,
   FEATURE_LATENCY: `${METRIC_PREFIX}/feature/latency`,
@@ -185,7 +212,7 @@ export async function queryFeatureOverview(
     perSeriesAligner: 'ALIGN_DELTA',
     crossSeriesReducer: 'REDUCE_SUM',
     groupByFields: ['metric.label.name'],
-  }).catch(() => []);
+  }).catch(catchNonCritical);
 
   const [inputTokensData, outputTokensData, inputImagesData, outputImagesData, latencyP95Data] =
     await Promise.all([
@@ -196,7 +223,7 @@ export async function queryFeatureOverview(
         perSeriesAligner: 'ALIGN_DELTA',
         crossSeriesReducer: 'REDUCE_SUM',
         groupByFields: ['metric.label.featureName'],
-      }).catch(() => []),
+      }).catch(catchNonCritical),
       queryTimeSeries({
         projectId,
         metricType: GenkitMetrics.GENERATE_OUTPUT_TOKENS,
@@ -204,7 +231,7 @@ export async function queryFeatureOverview(
         perSeriesAligner: 'ALIGN_DELTA',
         crossSeriesReducer: 'REDUCE_SUM',
         groupByFields: ['metric.label.featureName'],
-      }).catch(() => []),
+      }).catch(catchNonCritical),
       queryTimeSeries({
         projectId,
         metricType: GenkitMetrics.GENERATE_INPUT_IMAGES,
@@ -212,7 +239,7 @@ export async function queryFeatureOverview(
         perSeriesAligner: 'ALIGN_DELTA',
         crossSeriesReducer: 'REDUCE_SUM',
         groupByFields: ['metric.label.featureName'],
-      }).catch(() => []),
+      }).catch(catchNonCritical),
       queryTimeSeries({
         projectId,
         metricType: GenkitMetrics.GENERATE_OUTPUT_IMAGES,
@@ -220,7 +247,7 @@ export async function queryFeatureOverview(
         perSeriesAligner: 'ALIGN_DELTA',
         crossSeriesReducer: 'REDUCE_SUM',
         groupByFields: ['metric.label.featureName'],
-      }).catch(() => []),
+      }).catch(catchNonCritical),
       queryTimeSeries({
         projectId,
         metricType: GenkitMetrics.FEATURE_LATENCY,
@@ -228,7 +255,7 @@ export async function queryFeatureOverview(
         perSeriesAligner: 'ALIGN_DELTA',
         crossSeriesReducer: 'REDUCE_PERCENTILE_95',
         groupByFields: ['metric.label.name'],
-      }).catch(() => []),
+      }).catch(catchNonCritical),
     ]);
 
   const featureMap = new Map<string, {
@@ -395,7 +422,7 @@ export async function queryOverviewTimeSeries(
       endTime,
       perSeriesAligner: 'ALIGN_DELTA',
       crossSeriesReducer: 'REDUCE_PERCENTILE_99',
-    }).catch(() => []),
+    }).catch(catchNonCritical),
   ]);
 
   // If FEATURE_LATENCY returned nothing, try ACTION_LATENCY as fallback
@@ -408,7 +435,7 @@ export async function queryOverviewTimeSeries(
       endTime,
       perSeriesAligner: 'ALIGN_DELTA',
       crossSeriesReducer: 'REDUCE_PERCENTILE_99',
-    }).catch(() => []);
+    }).catch(catchNonCritical);
   }
 
   const requestsNorm = normalizeTimeSeries(requestsRaw);
@@ -481,7 +508,7 @@ export async function queryFeatureDetailTimeSeries(
         perSeriesAligner: 'ALIGN_DELTA',
         crossSeriesReducer: 'REDUCE_PERCENTILE_95',
         filter: nameFilter,
-      }).catch(() => []),
+      }).catch(catchNonCritical),
       queryTimeSeries({
         projectId,
         metricType: GenkitMetrics.FEATURE_LATENCY,
@@ -490,7 +517,7 @@ export async function queryFeatureDetailTimeSeries(
         perSeriesAligner: 'ALIGN_DELTA',
         crossSeriesReducer: 'REDUCE_PERCENTILE_50',
         filter: nameFilter,
-      }).catch(() => []),
+      }).catch(catchNonCritical),
       queryTimeSeries({
         projectId,
         metricType: GenkitMetrics.GENERATE_INPUT_TOKENS,
@@ -499,7 +526,7 @@ export async function queryFeatureDetailTimeSeries(
         perSeriesAligner: 'ALIGN_DELTA',
         crossSeriesReducer: 'REDUCE_SUM',
         filter: featureNameFilter,
-      }).catch(() => []),
+      }).catch(catchNonCritical),
       queryTimeSeries({
         projectId,
         metricType: GenkitMetrics.GENERATE_OUTPUT_TOKENS,
@@ -508,7 +535,7 @@ export async function queryFeatureDetailTimeSeries(
         perSeriesAligner: 'ALIGN_DELTA',
         crossSeriesReducer: 'REDUCE_SUM',
         filter: featureNameFilter,
-      }).catch(() => []),
+      }).catch(catchNonCritical),
     ]);
 
   const requestsNorm = normalizeTimeSeries(requestsRaw);

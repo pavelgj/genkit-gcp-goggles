@@ -5,6 +5,7 @@ import { useAsync } from '../hooks/use-async.js';
 import { getTrace, buildSpanTree, flattenSpanTree, type NormalizedSpan } from '../gcp/tracing.js';
 import { fetchTraceLogEntries, type SpanIOFromLogs } from '../gcp/logging.js';
 import { cache, CacheTTL } from '../gcp/cache.js';
+import { ErrorDisplay, InlineError } from '../components/error-display.js';
 import { formatDuration, formatTime, truncate, type Screen } from '../types.js';
 
 interface TraceViewerProps {
@@ -194,11 +195,7 @@ export function TraceViewerScreen({ projectId, traceId, featureName, onNavigate 
 
   if (traceError) {
     return (
-      <Box flexDirection="column">
-        <Text color="red">✗ Error loading trace:</Text>
-        <Text color="red">{traceError}</Text>
-        <Text dimColor>Press Esc to go back</Text>
-      </Box>
+      <ErrorDisplay error={traceError} context="trace" showRetry={true} showBack={true} />
     );
   }
 
@@ -454,7 +451,7 @@ function SpanDetailPanel({
       <Box marginTop={1} flexDirection="column">
         <Text dimColor>ID: {span.spanId}</Text>
         {logsError && (
-          <Text color="red">⚠ Logs: {truncate(logsError, 60)}</Text>
+          <InlineError error={logsError} context="logs" />
         )}
       </Box>
     </Box>

@@ -6,6 +6,7 @@ import { useAsync } from '../hooks/use-async.js';
 import { queryFeatureOverview, queryFeatureDetailTimeSeries } from '../gcp/monitoring.js';
 import { listTraces, normalizeTraceForList, type TraceListItem } from '../gcp/tracing.js';
 import { cache, CacheTTL } from '../gcp/cache.js';
+import { ErrorDisplay } from '../components/error-display.js';
 import {
   formatNumber,
   formatPercent,
@@ -346,7 +347,7 @@ export function FeatureDetailScreen({
             <Text> Loading traces…</Text>
           </Box>
         ) : tracesError ? (
-          <Text color="red">✗ {tracesError}</Text>
+          <ErrorDisplay error={tracesError} context="traces" showRetry={true} showBack={true} />
         ) : traces.length === 0 ? (
           <Text dimColor>No traces found for this feature in the selected time range.</Text>
         ) : (

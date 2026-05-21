@@ -5,6 +5,7 @@ import SelectInput from 'ink-select-input';
 import { useAsync } from './hooks/use-async.js';
 import { checkAuth } from './gcp/auth.js';
 import { cache } from './gcp/cache.js';
+import { ErrorDisplay } from './components/error-display.js';
 import { OverviewScreen } from './screens/overview.js';
 import { FeatureDetailScreen } from './screens/feature-detail.js';
 import { TraceViewerScreen } from './screens/trace-viewer.js';
@@ -86,17 +87,12 @@ export function App({ projectId: initialProjectId, timeRangePreset = '24h' }: Ap
 
   // Auth error
   if (!authStatus?.authenticated || authError) {
+    const errorMsg = authError || authStatus?.error || 'Not authenticated with Google Cloud';
     return (
       <Box flexDirection="column" padding={1}>
         <Header timeRange={timeRange} projectId="—" />
         <Box flexDirection="column" marginTop={1}>
-          <Text color="red">✗ Not authenticated with Google Cloud</Text>
-          <Text color="red">{authError || authStatus?.error || 'Unknown error'}</Text>
-          <Text />
-          <Text>Run this command to authenticate:</Text>
-          <Text bold color="cyan">  gcloud auth application-default login</Text>
-          <Text />
-          <Text dimColor>Then restart genkit-gcp-goggles.</Text>
+          <ErrorDisplay error={errorMsg} context="authentication" showRetry={false} />
         </Box>
       </Box>
     );

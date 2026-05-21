@@ -9,6 +9,7 @@ import {
   type FeatureOverview,
 } from '../gcp/monitoring.js';
 import { cache, CacheTTL } from '../gcp/cache.js';
+import { ErrorDisplay } from '../components/error-display.js';
 import {
   formatNumber,
   formatPercent,
@@ -75,11 +76,7 @@ export function OverviewScreen({ projectId, timeRange, onNavigate }: OverviewScr
 
   if (error) {
     return (
-      <Box flexDirection="column">
-        <Text color="red">✗ Error loading metrics:</Text>
-        <Text color="red">{error}</Text>
-        <Text dimColor>Press 'r' to retry</Text>
-      </Box>
+      <ErrorDisplay error={error} context="metrics" showRetry={true} />
     );
   }
 
