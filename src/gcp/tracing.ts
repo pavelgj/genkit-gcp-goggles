@@ -78,7 +78,7 @@ export async function listTraces(params: {
     startTime,
     endTime,
     pageSize: String(pageSize),
-    view: 'ROOTSPAN',
+    view: 'COMPLETE',
   });
 
   if (filter) queryParams.set('filter', filter);

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useCallback } from 'react';
 import { Box, Text, useInput, useStdout } from 'ink';
 import Spinner from 'ink-spinner';
 import { useAsync } from '../hooks/use-async.js';
@@ -59,16 +59,30 @@ export function TraceViewerScreen({ projectId, traceId, featureName, onNavigate 
     [projectId, traceId]
   );
 
-  // Phase 2: Load I/O from logs in background (lazy — Cloud Logging API)
-  const { data: logIO, loading: logsLoading, error: logsError } = useAsync(
-    () =>
-      cache.getOrFetch(
+  // Phase 2: Load I/O from logs ON-DEMAND only (user presses 'i')
+  // This avoids 429 rate limiting from Cloud Logging API by not eagerly
+  // fetching logs for every trace the user opens.
+  const [logIO, setLogIO] = useState<Map<string, SpanIOFromLogs> | null>(null);
+  const [logsLoading, setLogsLoading] = useState(false);
+  const [logsError, setLogsError] = useState<string | null>(null);
+
+  const loadLogs = useCallback(async () => {
+    if (logsLoading) return; // already in progress
+    setLogsLoading(true);
+    setLogsError(null);
+    try {
+      const result = await cache.getOrFetch(
         `trace-logs:${projectId}:${traceId}`,
         CacheTTL.TRACE_LOGS,
         () => fetchTraceLogEntries(projectId, traceId)
-      ),
-    [projectId, traceId]
-  );
+      );
+      setLogIO(result);
+    } catch (err) {
+      setLogsError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setLogsLoading(false);
+    }
+  }, [projectId, traceId, logsLoading]);
 
   // Build visible span list (respecting collapsed state)
   const visibleSpans: Array<{ span: NormalizedSpan; depth: number }> = [];
@@ -177,10 +191,14 @@ export function TraceViewerScreen({ projectId, traceId, featureName, onNavigate 
       }
     }
 
-    // Toggle full JSON view
+    // Toggle full JSON view — also triggers on-demand log loading
     if (input === 'i') {
       setShowFullJson(true);
       setScrollOffset(0);
+      // Trigger log loading if not already loaded
+      if (!logIO && !logsLoading) {
+        loadLogs();
+      }
     }
   });
 
@@ -210,6 +228,54 @@ export function TraceViewerScreen({ projectId, traceId, featureName, onNavigate 
 
   // Full-screen scrollable I/O view
   if (showFullJson && selectedSpan) {
+    // Show loading state while logs are being fetched
+    if (logsLoading && !logIO) {
+      return (
+        <Box flexDirection="column">
+          <Box marginBottom={1}>
+            <Text bold color="cyan">── Full I/O: </Text>
+            <Text bold>{selectedSpan.name}</Text>
+          </Box>
+          <Box>
+            <Text color="cyan"><Spinner type="dots" /></Text>
+            <Text> Loading I/O from Cloud Logging…</Text>
+          </Box>
+          <Box marginTop={1}>
+            <Text dimColor>[i/Esc] Cancel</Text>
+          </Box>
+        </Box>
+      );
+    }
+
+    // Show error if logs failed to load
+    if (logsError && !logIO) {
+      return (
+        <Box flexDirection="column">
+          <Box marginBottom={1}>
+            <Text bold color="cyan">── Full I/O: </Text>
+            <Text bold>{selectedSpan.name}</Text>
+          </Box>
+          <InlineError error={logsError} context="Cloud Logging" />
+          <Box marginTop={1}>
+            <Text dimColor>Showing trace label data (may be redacted)</Text>
+          </Box>
+          <Box flexDirection="column" marginTop={1}>
+            {fullIOLines.map((line, i) => {
+              const isHeader = line.startsWith('━━━');
+              return (
+                <Text key={i} wrap="truncate" color={isHeader ? 'cyan' : undefined} bold={isHeader}>
+                  {line}
+                </Text>
+              );
+            })}
+          </Box>
+          <Box marginTop={1}>
+            <Text dimColor>[i/Esc] Back</Text>
+          </Box>
+        </Box>
+      );
+    }
+
     const visibleLines = fullIOLines.slice(scrollOffset, scrollOffset + viewportHeight);
     const maxScroll = Math.max(0, fullIOLines.length - viewportHeight);
     const scrollPct = maxScroll > 0 ? Math.round((scrollOffset / maxScroll) * 100) : 100;
@@ -273,9 +339,9 @@ export function TraceViewerScreen({ projectId, traceId, featureName, onNavigate 
             <SpanDetailPanel
               span={selectedSpan}
               spanIO={selectedSpanIO}
+              logsLoaded={logIO !== null}
               logsLoading={logsLoading}
               logsError={logsError || undefined}
-              logIOSize={logIO?.size}
               showFullJson={false}
             />
           )}
@@ -336,16 +402,16 @@ function SpanTreeNode({
 function SpanDetailPanel({
   span,
   spanIO,
+  logsLoaded,
   logsLoading,
   logsError,
-  logIOSize,
   showFullJson,
 }: {
   span: NormalizedSpan;
   spanIO?: SpanIOFromLogs;
+  logsLoaded: boolean;
   logsLoading: boolean;
   logsError?: string;
-  logIOSize?: number;
   showFullJson: boolean;
 }) {
   const typeLabel = getSpanTypeLabel(span);
@@ -353,30 +419,20 @@ function SpanDetailPanel({
   const statusColor = span.status === 'success' ? 'green' : span.status === 'error' ? 'red' : 'gray';
 
   // Resolve input/output: prefer log-based I/O, fall back to trace labels.
-  // While logs are loading, don't fall back to trace labels (which are usually
-  // '<redacted>') — show a spinner instead and wait for log data.
-  // If logs errored, fall back to trace labels immediately.
-  const logsDone = !logsLoading || !!logsError;
-  const rawInput = spanIO?.input || (logsDone ? span.input : '') || '';
-  const rawOutput = spanIO?.output || (logsDone ? span.output : '') || '';
+  const rawInput = spanIO?.input || span.input || '';
+  const rawOutput = spanIO?.output || span.output || '';
 
-  // Try to pretty-print JSON
-  const formatJson = (s: string): string => {
-    if (!s || s === '<redacted>') return s || '—';
-    try {
-      return JSON.stringify(JSON.parse(s), null, 2);
-    } catch {
-      return s;
-    }
-  };
+  // Determine if we have real (non-redacted) data to show
+  const inputIsReal = rawInput && rawInput !== '<redacted>';
+  const outputIsReal = rawOutput && rawOutput !== '<redacted>';
+  const hasRealData = inputIsReal || outputIsReal;
 
-  // In compact mode, show first 200 chars; in full mode (press 'i'), show everything
-  const inputDisplay = rawInput && rawInput !== '<redacted>'
-    ? (showFullJson ? formatJson(rawInput) : truncate(rawInput, 200))
-    : (logsLoading ? null : (rawInput || '—'));
-  const outputDisplay = rawOutput && rawOutput !== '<redacted>'
-    ? (showFullJson ? formatJson(rawOutput) : truncate(rawOutput, 200))
-    : (logsLoading ? null : (rawOutput || '—'));
+  // Only show I/O boxes if logs have been loaded OR trace labels have real data
+  const showIO = logsLoaded || hasRealData;
+
+  // Show truncated preview in compact mode
+  const inputDisplay = inputIsReal ? truncate(rawInput, 200) : (rawInput || '—');
+  const outputDisplay = outputIsReal ? truncate(rawOutput, 200) : (rawOutput || '—');
 
   return (
     <Box flexDirection="column">
@@ -411,47 +467,49 @@ function SpanDetailPanel({
         </Box>
       )}
 
-      {/* Input */}
-      <Box flexDirection="column" marginTop={1}>
-        <Text bold dimColor>
-          {typeLabel === 'flow' ? 'Flow input:' : 'Input:'}
-        </Text>
-        <Box borderStyle="single" borderColor="gray" paddingX={1}>
-          {inputDisplay === null ? (
-            <Box>
-              <Text color="cyan"><Spinner type="dots" /></Text>
-              <Text dimColor> Loading…</Text>
-            </Box>
-          ) : (
-            <Text wrap="wrap">{inputDisplay}</Text>
-          )}
-        </Box>
-      </Box>
-
-      {/* Output */}
-      <Box flexDirection="column" marginTop={1}>
-        <Text bold dimColor>
-          {typeLabel === 'flow' ? 'Flow output:' : 'Output:'}
-        </Text>
-        <Box borderStyle="single" borderColor="gray" paddingX={1}>
-          {outputDisplay === null ? (
-            <Box>
-              <Text color="cyan"><Spinner type="dots" /></Text>
-              <Text dimColor> Loading…</Text>
-            </Box>
-          ) : (
-            <Text wrap="wrap" color={rawOutput === '<redacted>' ? 'yellow' : undefined}>
-              {outputDisplay}
+      {showIO ? (
+        <>
+          {/* Input */}
+          <Box flexDirection="column" marginTop={1}>
+            <Text bold dimColor>
+              {typeLabel === 'flow' ? 'Flow input:' : 'Input:'}
             </Text>
-          )}
-        </Box>
-      </Box>
+            <Box borderStyle="single" borderColor="gray" paddingX={1}>
+              <Text wrap="wrap">{inputDisplay}</Text>
+            </Box>
+          </Box>
 
-      {/* Span ID & logs status */}
+          {/* Output */}
+          <Box flexDirection="column" marginTop={1}>
+            <Text bold dimColor>
+              {typeLabel === 'flow' ? 'Flow output:' : 'Output:'}
+            </Text>
+            <Box borderStyle="single" borderColor="gray" paddingX={1}>
+              <Text wrap="wrap">{outputDisplay}</Text>
+            </Box>
+          </Box>
+        </>
+      ) : (
+        /* No I/O loaded yet — show clear CTA */
+        <Box marginTop={1}>
+          <Text color="cyan">📋 Press [i] to load full I/O from Cloud Logging</Text>
+        </Box>
+      )}
+
+      {/* Span ID + loading/error status */}
       <Box marginTop={1} flexDirection="column">
         <Text dimColor>ID: {span.spanId}</Text>
+        {logsLoading && (
+          <Box>
+            <Text color="cyan"><Spinner type="dots" /></Text>
+            <Text dimColor> Loading full I/O from logs…</Text>
+          </Box>
+        )}
         {logsError && (
           <InlineError error={logsError} context="logs" />
+        )}
+        {showIO && !logsLoaded && !logsLoading && (
+          <Text dimColor>Press [i] for full I/O view</Text>
         )}
       </Box>
     </Box>

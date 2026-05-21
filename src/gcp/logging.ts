@@ -2,6 +2,39 @@ import { getAccessToken } from './auth.js';
 
 const LOGGING_BASE = 'https://logging.googleapis.com/v2';
 
+/** Retry a fetch with exponential backoff on 429/5xx errors */
+async function fetchWithRetry(
+  url: string,
+  options: RequestInit,
+  maxRetries = 3
+): Promise<Response> {
+  let lastError: Error | undefined;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const response = await fetch(url, options);
+    if (response.ok) return response;
+
+    const status = response.status;
+    // Only retry on rate limit (429) or server errors (5xx)
+    if (status !== 429 && status < 500) {
+      return response; // non-retryable error — return as-is
+    }
+
+    lastError = new Error(`HTTP ${status}`);
+
+    if (attempt < maxRetries) {
+      // Exponential backoff: 1s, 2s, 4s (with jitter)
+      const retryAfter = response.headers.get('Retry-After');
+      const baseDelay = retryAfter
+        ? parseInt(retryAfter, 10) * 1000 || 1000
+        : 1000 * Math.pow(2, attempt);
+      const jitter = Math.random() * 500;
+      await new Promise((r) => setTimeout(r, baseDelay + jitter));
+    }
+  }
+  // Return the last failed response so the caller can handle the error
+  throw lastError;
+}
+
 interface LogEntry {
   logName: string;
   timestamp: string;
@@ -54,7 +87,7 @@ export async function fetchTraceLogEntries(
       body.pageToken = pageToken;
     }
 
-    const response = await fetch(`${LOGGING_BASE}/entries:list`, {
+    const response = await fetchWithRetry(`${LOGGING_BASE}/entries:list`, {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${token}`,
